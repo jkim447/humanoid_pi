@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.galaxea_policy as galaxea_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -316,17 +317,97 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
         # TODO(karl): comment this out once we have updated the Libero checkpoints to not use
         # the delta action transform
-        delta_action_mask = _transforms.make_bool_mask(6, -1)
-        data_transforms = data_transforms.push(
-            inputs=[_transforms.DeltaActions(delta_action_mask)],
-            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        )
+        # delta_action_mask = _transforms.make_bool_mask(6, -1)
+        # data_transforms = data_transforms.push(
+        #     inputs=[_transforms.DeltaActions(delta_action_mask)],
+        #     outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        # )
 
         # Model transforms include things like tokenizing the prompt and action targets
         # You do not need to change anything here for your own dataset.
         model_transforms = ModelTransformFactory()(model_config)
 
         # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotGalaxeaDataConfig(DataConfigFactory):
+    """
+    This config is used to configure transforms that are applied at various parts of the data
+    pipeline.  It follows the exact structure of `LeRobotLiberoDataConfig`, but the key mappings
+    and transforms are tailored to the Galaxea dataset.
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # ------------------------------------------------------------------------------
+        # 1) Repack transform
+        # ------------------------------------------------------------------------------
+
+        # The repack transform is *only* applied to data coming from the dataset (not at
+        # inference time).  It remaps keys so the raw Galaxea dataset fields match the keys
+        # produced by the inference environment.
+        #
+        # → Modify the right-hand-side (source) strings to match the exact field names you
+        #   wrote when converting to LeRobot.  Keep the left-hand-side (target) strings
+        #   unchanged—they are what the rest of the pipeline expects.
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        # generic ↓              source in the dataset ↓
+                        "image"       : "image",          # your converter already writes this
+                        # "wrist_image" : "wrist_image",    # map only if you actually stored one
+                        "state"       : "state",
+                        "actions"     : "actions",
+                        "prompt"      : "task",           # your converter used the key "task"
+                    }
+                )
+            ]
+        )
+
+        # ------------------------------------------------------------------------------
+        # 2) Data transforms (run on dataset batches *and* at inference)
+        # ------------------------------------------------------------------------------
+        data_transforms = _transforms.Group(
+            inputs=[
+                galaxea_policy.GalaxeaInputs(
+                    action_dim=model_config.action_dim,
+                    model_type=model_config.model_type,
+                )
+            ],
+            outputs=[
+                galaxea_policy.GalaxeaOutputs(
+                    action_dim=model_config.action_dim,
+                )
+            ],
+        )
+        # ----------------------------------------------------------------------
+        #  Optional: convert absolute → delta actions for training PI-0 models.
+        # ----------------------------------------------------------------------
+        # TODO change transforms.make_bool_mask to the actual action_dim
+        delta_action_mask = _transforms.make_bool_mask(model_config.action_dim)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        # ------------------------------------------------------------------------------
+        # 3) Model transforms (tokenization, target prep, etc.) – unchanged.
+        # ------------------------------------------------------------------------------
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # ------------------------------------------------------------------------------
+        # 4) Assemble and return DataConfig
+        # ------------------------------------------------------------------------------
+
         return dataclasses.replace(
             self.create_base_config(assets_dirs),
             repack_transforms=repack_transform,
@@ -539,6 +620,67 @@ _CONFIGS = [
             ),
         ),
     ),
+
+    TrainConfig(
+        # Give the experiment a unique handle.
+        name="pi0_egodex",
+
+        # Full fine-tuning of the standard Pi-0 architecture.
+        # model=pi0.Pi0Config(),
+        model=pi0.Pi0Config(action_dim=48),
+
+        # Point to your Galaxea LeRobot repo and use the Galaxea-specific transforms.
+        data=LeRobotGalaxeaDataConfig(
+            repo_id="egodex",  # ← replace with your repo if different
+            base_config=DataConfig(
+                # Load the language instruction from the `task` field as the prompt.
+                prompt_from_task=True,
+            ),
+        ),
+
+        # Initialize from the Pi-0 base checkpoint (same as pi0_libero).
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
+
+        # Training hyper-parameters – start with the same settings as pi0_libero.
+        num_train_steps=30_000,
+        # batch_size=32,
+        # lr_schedule=_optimizer.CosineDecaySchedule(),
+        # optimizer=_optimizer.AdamW(),
+        # ema_decay=0.99,
+    ),
+
+
+    TrainConfig(
+        # Give the experiment a unique handle.
+        name="pi0_galaxea",
+
+        # Full fine-tuning of the standard Pi-0 architecture.
+        model=pi0.Pi0Config(),
+
+        # Point to your Galaxea LeRobot repo and use the Galaxea-specific transforms.
+        data=LeRobotGalaxeaDataConfig(
+            repo_id="jkim447/egodex",  # ← replace with your repo if different
+            base_config=DataConfig(
+                # Load the language instruction from the `task` field as the prompt.
+                prompt_from_task=True,
+            ),
+        ),
+
+        # Initialize from the Pi-0 base checkpoint (same as pi0_libero).
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params"
+        ),
+
+        # Training hyper-parameters – start with the same settings as pi0_libero.
+        num_train_steps=30_000,
+        # batch_size=32,
+        # lr_schedule=_optimizer.CosineDecaySchedule(),
+        # optimizer=_optimizer.AdamW(),
+        # ema_decay=0.99,
+    ),
+
     #
     # Fine-tuning Libero configs.
     #

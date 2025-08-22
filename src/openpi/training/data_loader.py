@@ -136,18 +136,41 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
+    # --- NEW: EgoDex branch ---
+    # if repo_id == "egodex":
+    # Lazy import to avoid hard dependency when not used
+    from openpi.training.egodex_dataset import EgoDexSeqDataset
+
+    # Resolve root (field on DataConfig OR env var fallback)
+    # egodex_root = getattr(data_config, "egodex_root", None) or os.getenv("EGODEX_ROOT")
+    egodex_root = "/iris/projects/humanoid/dataset/ego_dex"
+    # if egodex_root is None:
+    #     raise ValueError(
+    #         "EgoDex: set data_config.egodex_root or the EGODEX_ROOT env var to the dataset root."
+    #     )
+
+    return EgoDexSeqDataset(
+        root_dir=str(egodex_root),
+        action_horizon=action_horizon,                               # use model’s horizon
+        image_size=getattr(data_config, "image_size", (224, 224)),
+        state_format=getattr(data_config, "state_format", "ego"),    # or "ego"
+        window_stride=getattr(data_config, "window_stride", 1),
+        traj_per_task=getattr(data_config, "traj_per_task", 10), # 3 used for norm stats, change to None otherwise (i think)
+        max_episodes=getattr(data_config, "max_episodes", None), # 200 used for norm stats, change to None otherwise
     )
 
-    if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    # dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    # dataset = lerobot_dataset.LeRobotDataset(
+    #     data_config.repo_id,
+    #     delta_timestamps={
+    #         key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+    #     },
+    # )
 
-    return dataset
+    # if data_config.prompt_from_task:
+    #     dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+
+    # return dataset
 
 
 def create_rlds_dataset(

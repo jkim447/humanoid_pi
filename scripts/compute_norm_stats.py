@@ -1,5 +1,8 @@
 """Compute normalization statistics for a config.
 
+USAGE: uv run scripts/compute_norm_stats.py --config-name pi0_egodex
+
+
 This script is used to compute the normalization statistics for a given config. It
 will compute the mean and standard deviation of the data in the dataset and save it
 to the config assets directory.
@@ -49,10 +52,22 @@ def create_torch_dataloader(
     data_loader = _data_loader.TorchDataLoader(
         dataset,
         local_batch_size=batch_size,
-        num_workers=8,
+        num_workers=8,  # tune to your machine
         shuffle=shuffle,
         num_batches=num_batches,
     )
+
+    # data_loader = _data_loader.TorchDataLoader(
+    #                 dataset,
+    #                 local_batch_size=batch_size,
+    #                 num_workers=16,             # tune to your machine
+    #                 shuffle=shuffle,
+    #                 num_batches=num_batches,
+    #                 persistent_workers=True,
+    #                 prefetch_factor=4,
+    #                 pin_memory=True,
+    #                 )
+
     return data_loader, num_batches
 
 
@@ -93,23 +108,34 @@ def main(config_name: str, max_frames: int | None = None):
             data_config, config.model.action_horizon, config.batch_size, max_frames
         )
     else:
+        # TODO: remove hard-coded batchsize
+        batch_size = 64
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, max_frames
+            data_config, config.model.action_horizon, batch_size, config.model, max_frames
         )
+
+        # data_loader, num_batches = create_torch_dataloader(
+        #     data_config, config.model.action_horizon, config.batch_size, config.model, max_frames
+        # )
 
     keys = ["state", "actions"]
     stats = {key: normalize.RunningStats() for key in keys}
 
     for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
         for key in keys:
+            # print(key)
+            # print(batch[key].shape)
+            # print(batch[key][0].shape)
             values = np.asarray(batch[key][0])
             stats[key].update(values.reshape(-1, values.shape[-1]))
+        # assert False
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
     output_path = config.assets_dirs / data_config.repo_id
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
+    # Writing stats to: /iris/projects/humanoid/openpi/assets/pi0_galaxea/jkim447/pick_up_can_dataset
 
 
 if __name__ == "__main__":
